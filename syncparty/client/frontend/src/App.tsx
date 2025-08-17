@@ -103,6 +103,41 @@ type Device = {
 	connected: boolean
 }
 
+function useTimeSync(wsRef: React.MutableRefObject<WebSocket | null>) {
+	const [offsetMs, setOffsetMs] = useState(0)
+	useEffect(() => {
+		let timer: any
+		function sample() {
+			const t0 = Date.now()
+			wsRef.current?.send(JSON.stringify({ type: 'time_sync', clientSentAt: t0 }))
+		}
+		timer = setInterval(sample, 3000)
+		sample()
+		return () => clearInterval(timer)
+	}, [])
+
+	useEffect(() => {
+		const ws = wsRef.current
+		if (!ws) return
+		const handler = (e: MessageEvent) => {
+			try {
+				const m = JSON.parse(e.data)
+				if (m.event === 'time_sync') {
+					const t2 = Date.now()
+					const t0 = m.clientSentAt as number
+					const ts = m.serverNowMs as number
+					const rtt = t2 - t0
+					const serverToClient = ts + rtt / 2
+					setOffsetMs(serverToClient - t2)
+				}
+			} catch {}
+		}
+		ws.addEventListener('message', handler)
+		return () => ws.removeEventListener('message', handler)
+	}, [wsRef.current])
+	return offsetMs
+}
+
 function PartyDashboard({ party, setParty }: { party: Party | null, setParty: (p: Party|null)=>void }) {
 	const api = useAxios()
 	const [gridSize, setGridSize] = useState(5)
@@ -110,6 +145,19 @@ function PartyDashboard({ party, setParty }: { party: Party | null, setParty: (p
 	const wsRef = useRef<WebSocket | null>(null)
 	const audioRef = useRef<HTMLAudioElement | null>(null)
 	const [trackUrl, setTrackUrl] = useState('')
+	const [audioCtx, setAudioCtx] = useState<AudioContext | null>(null)
+	const [panner, setPanner] = useState<StereoPannerNode | null>(null)
+
+	useEffect(() => {
+		if (!audioCtx) {
+			const ctx = new AudioContext()
+			const pan = ctx.createStereoPanner()
+			const source = ctx.createMediaElementSource(audioRef.current!)
+			source.connect(pan).connect(ctx.destination)
+			setAudioCtx(ctx)
+			setPanner(pan)
+		}
+	}, [])
 
 	useEffect(() => {
 		if (!party) return
@@ -135,7 +183,7 @@ function PartyDashboard({ party, setParty }: { party: Party | null, setParty: (p
 							audioRef.current.currentTime = payload.data.seekMs / 1000
 						}
 						if (whenTs) {
-							const delay = whenTs - Date.now()
+							const delay = whenTs + offsetMs - Date.now()
 							if (delay > 10) setTimeout(()=>audioRef.current?.play(), delay)
 							else audioRef.current.play()
 						} else {
@@ -157,8 +205,17 @@ function PartyDashboard({ party, setParty }: { party: Party | null, setParty: (p
 		return () => ws.close()
 	}, [party?.code])
 
+	const offsetMs = useTimeSync(wsRef)
+
 	function broadcast(type: string, data: any) {
 		wsRef.current?.send(JSON.stringify({ type, data }))
+	}
+
+	function applyPanningFromGrid(d: Device) {
+		if (!panner) return
+		const mid = (gridSize - 1) / 2
+		const norm = (d.grid_x - mid) / mid
+		panner.pan.value = Math.max(-1, Math.min(1, norm))
 	}
 
 	async function updateDevice(d: Device, coords: {x:number,y:number}) {
@@ -166,6 +223,7 @@ function PartyDashboard({ party, setParty }: { party: Party | null, setParty: (p
 		const { data } = await api.post(`${API_BASE}/parties/${party.id}/update_device/`, { id: d.id, grid_x: coords.x, grid_y: coords.y })
 		broadcast('device_update', data)
 		setParty({ ...party, devices: party.devices.map(dd => dd.id === d.id ? data : dd) })
+		applyPanningFromGrid(data)
 	}
 
 	const grid: Array<Array<Device | null>> = Array.from({ length: gridSize }, () => Array(gridSize).fill(null))
@@ -212,11 +270,12 @@ function PartyDashboard({ party, setParty }: { party: Party | null, setParty: (p
 						<input className="w-full px-3 py-2 rounded bg-slate-900 border border-slate-700" placeholder="Paste audio URL (mp3, etc.)" value={trackUrl} onChange={e=>setTrackUrl(e.target.value)} />
 						<div className="flex gap-2">
 							<button className="px-3 py-1 rounded bg-sky-700" onClick={()=>{ if (trackUrl) { audioRef.current && (audioRef.current.src = trackUrl); broadcast('track',{ url: trackUrl }) } }}>Set Track</button>
-							<button className="px-3 py-1 rounded bg-indigo-600" onClick={()=>broadcast('play',{ startAtEpochMs: Date.now() + 300 })}>Play</button>
+							<button className="px-3 py-1 rounded bg-indigo-600" onClick={()=>broadcast('play',{ startAtEpochMs: Date.now() + 300 - offsetMs })}>Play</button>
 							<button className="px-3 py-1 rounded bg-slate-700" onClick={()=>broadcast('pause',{})}>Pause</button>
 							<button className="px-3 py-1 rounded bg-emerald-700" onClick={()=>broadcast('seek',{ seekMs: (audioRef.current?.currentTime||0)*1000 + 1000 })}>+1s</button>
+							<button className="px-3 py-1 rounded bg-amber-700" onClick={()=>broadcast('ring',{})}>Ring</button>
 						</div>
-						<p className="text-xs text-slate-400">Tip: Use a short mp3 URL for quick tests. Devices will start in sync using a scheduled start timestamp.</p>
+						<p className="text-xs text-slate-400">Devices sync using periodic time calibration over WebSocket with scheduled start.</p>
 					</div>
 				</div>
 			</div>

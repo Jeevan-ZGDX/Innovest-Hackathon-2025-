@@ -1,7 +1,7 @@
 from django.contrib.auth.models import User
 from django.shortcuts import get_object_or_404
 from rest_framework import generics, permissions, viewsets, status
-from rest_framework.decorators import action
+from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
 
 from .models import Party, PartyDevice, PlaybackState
@@ -11,6 +11,12 @@ from .serializers import UserSerializer, PartySerializer, PartyDeviceSerializer,
 class RegisterView(generics.CreateAPIView):
 	serializer_class = UserSerializer
 	permission_classes = [permissions.AllowAny]
+
+
+@api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated])
+def me(request):
+	return Response(UserSerializer(request.user).data)
 
 
 class PartyViewSet(viewsets.ModelViewSet):
@@ -28,7 +34,6 @@ class PartyViewSet(viewsets.ModelViewSet):
 	def by_code(self, request, code=None):
 		party = get_object_or_404(Party, code=code.upper())
 		self.check_object_permissions(request, party)
-		# Allow any authenticated to fetch party info
 		return Response(PartySerializer(party).data)
 
 	@action(detail=False, methods=['post'], url_path='join-by-code')

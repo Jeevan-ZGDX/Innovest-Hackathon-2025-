@@ -2,6 +2,7 @@ import json
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
 from django.contrib.auth.models import AnonymousUser
 from django.utils import timezone
+import time
 
 from .models import Party, PartyDevice
 
@@ -20,6 +21,12 @@ class PartyConsumer(AsyncJsonWebsocketConsumer):
 		message_type = content.get('type')
 		if message_type == 'ping':
 			await self.send_json({'type': 'pong'})
+			return
+
+		if message_type == 'time_sync':
+			client_sent_at = content.get('clientSentAt')
+			server_now_ms = int(time.time() * 1000)
+			await self.send_json({'event': 'time_sync', 'serverNowMs': server_now_ms, 'clientSentAt': client_sent_at})
 			return
 
 		if message_type == 'device_update':
